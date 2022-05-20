@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script src="https://unpkg.com/three@0.137.4/build/three.min.js"></script>
+    <script>
+      // ページの読み込みを待機
+      window.addEventListener("DOMContentLoaded", main);
+
+      // 点の初期位置
+      const POINT_INIT_POSITIONS = [
+        new THREE.Vector2(-10, 0),
+        new THREE.Vector2(-5, 0),
+        new THREE.Vector2(-2, 0),
+        new THREE.Vector2(7, 0),
+        new THREE.Vector2(10, 0),
+      ];
+
+      // CCD法のupdate回数
+      const ITERATE_COUNT = 50;
+
+      // positionのlistをもらって、その分の点と線分を描画する
+      function makeMesh(scene, positionList, color = 0x000000) {
+        // 点の生成
+        const pointMeshList = [];
+        positionList.forEach((position) => {
+          const geometry = new THREE.CircleGeometry(0.2, 20);
+          const material = new THREE.MeshBasicMaterial({ color });
+          const circle = new THREE.Mesh(geometry, material);
+          circle.position.set(position.x, position.y, 0);
+          scene.add(circle);
+          pointMeshList.push(circle);
+        });
+
+        // 線分の生成
+        const lineGeometry = new THREE.BufferGeometry().setFromPoints(
+          positionList.map(
+            (position) => new THREE.Vector3(position.x, position.y, 0)
+          )
+        );
+        const lineMaterial = new THREE.LineBasicMaterial({ color });
+        const line = new THREE.Line(lineGeometry, lineMaterial);
+        scene.add(line);
+
+        return { pointMeshList, line };
+      }
+
+      // 点と線分の位置をpositionListをもとに更新する
+      function updateMesh(positionList, pointMeshList, line) {
+        pointMeshList.forEach((mesh, idx) => {
+          mesh.position.x = positionList[idx].x;
+          mesh.position.y = positionList[idx].y;
+        });
+        line.geometry.dispose();
+        line.geometry = new THREE.BufferGeometry().setFromPoints(
+          positionList.map(
+            (position) => new THREE.Vector3(position.x, position.y, 0)
+          )
+        );
+      }
+
+      // vec1に対するvec2の符号付きの角度を計算する関数
+      function signedRadian(vec1, vec2) {
+        const cos =
+          (vec1.x * vec2.x + vec1.y * vec2.y) /
+          Math.sqrt(
+            (vec1.x * vec1.x + vec1.y * vec1.y) *
+              (vec2.x * vec2.x + vec2.y * vec2.y)
+          );
+
+        const acos = Math.acos(cos);
+
+        if (Number.isNaN(acos)) {
+          // 2つのベクトルが近すぎて丸め誤差により1を若干超えたような場合
+          return 0;
+        } else {
+          return vec1.x * vec2.y - vec2.x * vec1.y >= 0 ? acos : -acos;
+        }
+      }
+
+      // originを基準に、targetをangleだけ回転させたときのtargetの座標を返す関数
+      function rotatePoint(origin, target, angle) {
+        diff = new THREE.Vector2(target.x - origin.x, target.y - origin.y);
+        return new THREE.Vector2(
+          Math.cos(angle) * diff.x - Math.sin(angle) * diff.y + origin.x,
+          Math.sin(angle) * diff.x + Math.cos(angle) * diff.y + origin.y
+        );
+      }
+
+      // CCD法の1ステップを実行する
+      // positionList: Vector2[], target: Vector2
+      function updateOneStep(positionList, target) {
+        for (let i = positionList.length - 2; i >= 0; i -= 1) {
+          const origin = positionList[i];
+          const end = positionList[positionList.length - 1];
+          const toTarget = new THREE.Vector2(
+            target.x - origin.x,
+            target.y - origin.y
+          );
+          const toEnd = new THREE.Vector2(end.x - origin.x, end.y - origin.y);
+          const angle = signedRadian(toEnd, toTarget);
+
+          for (let j = i + 1; j < positionList.length; j += 1) {
+            positionList[j] = rotatePoint(origin, positionList[j], angle);
+          }
+        }
+
+        return positionList;
+      }
+
+      function main() {
+        // canvasのサイズを指定
+        const WIDTH = 600;
+        const HEIGHT = 600;
+
+        const LEFT = -15;
+        const RIGHT = 15;
+        const TOP = 15;
+        const BOTTOM = -15;
+
+        // rendererを作成
+        const renderer = new THREE.WebGLRenderer({
+          canvas: document.querySelector("#Canvas"),
+        });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(WIDTH, HEIGHT);
+
+        // シーンを作成
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xffffff);
+
+        // カメラを作成
+        const camera = new THREE.OrthographicCamera(
+          LEFT,
+          RIGHT,
+          TOP,
+          BOTTOM,
+          1,
+          1000
+        );
+        camera.position.set(0, 0, 30);
+        camera.lookAt(new THREE.Vector3(0, 0, 0));
+        scene.add(camera);
+
+        // 座標軸の作成
+        scene.add(
+          new THREE.ArrowHelper(
+            new THREE.Vector3(1, 0, 0), // direction
+            new THREE.Vector3(LEFT, 0, 0), // origin
+            RIGHT - LEFT, // length
+            0x000000, // color
+            0.5, // headLength
+            0.5 // headWidth
+          )
+        );
+        scene.add(
+          new THREE.ArrowHelper(
+            new THREE.Vector3(0, 1, 0), // direction
+            new THREE.Vector3(0, BOTTOM, 0), // origin
+            TOP - BOTTOM, // length
+            0x000000, // color
+            0.5, // headLength
+            0.5 // headWidth
+          )
+        );
+
+        // 制御点の作成
+        const { pointMeshList, line } = makeMesh(scene, POINT_INIT_POSITIONS);
+
+        // ファーストレンダリング
+        renderer.render(scene, camera);
+
+        // 点の更新時の処理をリッスンする
+        document.getElementById("Canvas").onclick = (event) => {
+          // クリックされた位置を算出
+          let vec = new THREE.Vector3(
+            (event.clientX / WIDTH) * 2 - 1,
+            -(event.clientY / HEIGHT) * 2 + 1,
+            0
+          ).unproject(camera);
+
+          // 一定回数CCD法の更新を繰り返す
+          let updatedpositionList = updateOneStep(
+            pointMeshList.map((mesh) => mesh.position),
+            vec
+          );
+          for (let iter = 0; iter < ITERATE_COUNT; iter += 1) {
+            updatedpositionList = updateOneStep(updatedpositionList, vec);
+          }
+
+          // 点の描画を更新
+          updateMesh(updatedpositionList, pointMeshList, line);
+
+          // レンダリング
+          renderer.render(scene, camera);
+        };
+      }
+    </script>
+  </head>
+  <body style="margin: 0">
+    <canvas id="Canvas"></canvas>
+    <h3>Cyclic Coordinate Descent 法によるIK</h3>
+    <p>
+      Canvas内をクリックすると、end
+      pointがその位置になるようにCCD法が走ります。ソースコード内の
+      POINT_INIT_POSITIONS
+      をいじれば、点の初期位置や個数を変えることができます。
+    </p>
+  </body>
+</html>
